@@ -1,0 +1,2 @@
+default_fqbn: esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=cdc,UploadMode=cdc,UploadSpeed=921600
+default_port: /dev/cu.usbmodem14C19FC89DD41
