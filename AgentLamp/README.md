@@ -46,7 +46,7 @@ flowchart LR
 ```
 
 1. A hook runs on the Mac and POSTs one JSON event to `http://127.0.0.1:8765/event`.
-2. [../mac/bridge.py](../mac/bridge.py) keeps a set of session ids per app. The byte it sends is the strongest state among that app’s sessions: attention, then error, then working, then idle. A session with no further event for 15 minutes is dropped.
+2. [bridge.py](bridge.py) keeps a set of session ids per app. The byte it sends is the strongest state among that app’s sessions: attention, then error, then working, then idle. A session with no further event for 15 minutes is dropped.
 3. The bridge scans for the BLE name `AgentLamp` and writes three bytes to one GATT characteristic. The board notifies the same three bytes back.
 
 The ESP32-S3 has BLE 5 only. Classic Bluetooth serial is not available, so the Mac must use CoreBluetooth. The bridge does that through Python `bleak`. Only one bridge can hold the connection. A second Mac must stop the first bridge before it connects.
@@ -124,9 +124,9 @@ Without the Mac, the serial monitor accepts a line of three digits (`0`–`3`) i
 ### 2. Run the bridge on the Mac that should drive the lamp
 
 ```bash
-python3 -m venv mac/.venv
-mac/.venv/bin/pip install -r mac/requirements.txt
-mac/.venv/bin/python mac/bridge.py
+python3 -m venv AgentLamp/.venv
+AgentLamp/.venv/bin/pip install -r AgentLamp/requirements.txt
+AgentLamp/.venv/bin/python AgentLamp/bridge.py
 ```
 
 Allow Bluetooth for the terminal or Python process when macOS asks. Leave the process running. The menu-bar title is `Lamp` plus three marks, in order Cursor, CodeBuddy, Codex:
@@ -144,7 +144,7 @@ Each app has Auto, Idle, Working, Needs you, and Error. Auto follows the hooks. 
 
 ### 3. Install hooks on that same Mac
 
-The hook script is [../mac/hook_report.py](../mac/hook_report.py). It uses `/usr/bin/python3` and does not need the virtualenv. Point every command at the copy of the script on that machine. Copying this Mac’s `hooks.json` onto another account will not work, because the path is absolute.
+The hook script is [hook_report.py](hook_report.py). It uses `/usr/bin/python3` and does not need the virtualenv. Point every command at the copy of the script on that machine. Copying this Mac’s `hooks.json` onto another account will not work, because the path is absolute.
 
 Cursor, `~/.cursor/hooks.json`:
 
@@ -152,14 +152,14 @@ Cursor, `~/.cursor/hooks.json`:
 {
   "version": 1,
   "hooks": {
-    "beforeSubmitPrompt": [{ "command": "/usr/bin/python3 /ABS/PATH/mac/hook_report.py cursor before-submit" }],
-    "stop": [{ "command": "/usr/bin/python3 /ABS/PATH/mac/hook_report.py cursor stop" }],
-    "beforeShellExecution": [{ "command": "/usr/bin/python3 /ABS/PATH/mac/hook_report.py cursor before-shell" }],
-    "afterShellExecution": [{ "command": "/usr/bin/python3 /ABS/PATH/mac/hook_report.py cursor after-shell" }],
-    "beforeMCPExecution": [{ "command": "/usr/bin/python3 /ABS/PATH/mac/hook_report.py cursor before-mcp" }],
-    "afterMCPExecution": [{ "command": "/usr/bin/python3 /ABS/PATH/mac/hook_report.py cursor after-mcp" }],
-    "preToolUse": [{ "command": "/usr/bin/python3 /ABS/PATH/mac/hook_report.py cursor pre-tool", "matcher": "AskQuestion" }],
-    "postToolUse": [{ "command": "/usr/bin/python3 /ABS/PATH/mac/hook_report.py cursor post-tool", "matcher": "AskQuestion" }]
+    "beforeSubmitPrompt": [{ "command": "/usr/bin/python3 /ABS/PATH/AgentLamp/hook_report.py cursor before-submit" }],
+    "stop": [{ "command": "/usr/bin/python3 /ABS/PATH/AgentLamp/hook_report.py cursor stop" }],
+    "beforeShellExecution": [{ "command": "/usr/bin/python3 /ABS/PATH/AgentLamp/hook_report.py cursor before-shell" }],
+    "afterShellExecution": [{ "command": "/usr/bin/python3 /ABS/PATH/AgentLamp/hook_report.py cursor after-shell" }],
+    "beforeMCPExecution": [{ "command": "/usr/bin/python3 /ABS/PATH/AgentLamp/hook_report.py cursor before-mcp" }],
+    "afterMCPExecution": [{ "command": "/usr/bin/python3 /ABS/PATH/AgentLamp/hook_report.py cursor after-mcp" }],
+    "preToolUse": [{ "command": "/usr/bin/python3 /ABS/PATH/AgentLamp/hook_report.py cursor pre-tool", "matcher": "AskQuestion" }],
+    "postToolUse": [{ "command": "/usr/bin/python3 /ABS/PATH/AgentLamp/hook_report.py cursor post-tool", "matcher": "AskQuestion" }]
   }
 }
 ```

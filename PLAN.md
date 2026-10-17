@@ -95,13 +95,13 @@ Python plus `bleak` is enough for v1 (menu bar via `rumps`, or a plain terminal 
 ## Where the code is
 
 - Firmware: [AgentLamp/AgentLamp.ino](AgentLamp/AgentLamp.ino)
-- Mac bridge: [mac/bridge.py](mac/bridge.py) on `127.0.0.1:8765`
-- Hook script: [mac/hook_report.py](mac/hook_report.py), installed into `~/.cursor/hooks.json`, `~/.codebuddy/settings.json`, and `~/.codex/hooks.json`
+- Mac bridge: [AgentLamp/bridge.py](AgentLamp/bridge.py) on `127.0.0.1:8765`
+- Hook script: [AgentLamp/hook_report.py](AgentLamp/hook_report.py), installed into `~/.cursor/hooks.json`, `~/.codebuddy/settings.json`, and `~/.codex/hooks.json`
 
 Run the bridge from this repo:
 
 ```bash
-mac/.venv/bin/python mac/bridge.py
+AgentLamp/.venv/bin/python AgentLamp/bridge.py
 ```
 
 Add `--terminal` to skip the menu bar. Codex skips a new hook until it is trusted with `/hooks`. The hook script itself uses `/usr/bin/python3` and does not need the virtualenv.
