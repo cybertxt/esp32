@@ -4,7 +4,9 @@
 //   0 idle   1 working   2 error   3 attention
 // Needs-you double-blinks that app's color and beeps once.
 // Working pulses. Error blinks red. Several apps on the same
-// pattern take turns every 0.8 s. No link: slow white breathe.
+// pattern take turns every 0.8 s.
+// Linked and idle: one dim white heartbeat every 4 s.
+// No link: slow white breathe.
 //
 // BOOT prints status and runs a color self-test.
 // Serial 115200: a line of three digits, e.g. "1 0 3", sets the
@@ -234,7 +236,16 @@ void paint(uint32_t now) {
   int count = 0;
   for (int i = 0; i < 3; ++i) best = max(best, rankOf(appState[i]));
   if (best == 0) {
-    showColor(0, 0, 0);
+    // One dim pulse every 4 s. Quieter than the disconnected breathe,
+    // and it stays dark most of the time so it does not look like work.
+    const uint32_t phase = now % 4000;
+    uint8_t level = 0;
+    if (phase < 180) {
+      level = (uint8_t)(phase * 2 / 180);
+    } else if (phase < 360) {
+      level = (uint8_t)((360 - phase) * 2 / 180);
+    }
+    showColor(level, level, level);
     return;
   }
   for (int i = 0; i < 3; ++i) {

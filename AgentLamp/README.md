@@ -21,7 +21,7 @@ The pattern says what that app is doing. A higher pattern wins. If two apps shar
 | Fast double-blink, plus one short beep | Needs you. A question, or permission to run something. This beats the other patterns. |
 | Slow pulse | Working. |
 | Red blink | The turn ended with an error. |
-| Off | Linked to the Mac, and every app is idle. |
+| Dim white heartbeat, about every 4 s | Linked to the Mac, and every app is idle. The lamp is on and waiting. |
 | Slow white breathe | USB power is on, but the Mac bridge is not connected. |
 
 Brightness is capped in firmware (`DIM` in [AgentLamp.ino](AgentLamp.ino)) so blinks stay at the same low level as the working glow.

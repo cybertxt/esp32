@@ -30,7 +30,7 @@ The pattern says what that app is doing. A higher pattern wins. If two apps shar
 - **Needs you** (question, or permission to run something): fast double-blink of that app’s color. This beats working and error, so a blocked agent is not hidden behind one that is still running. Entering this state also gives one short beep on the buzzer.
 - **Working**: slow pulse of that color.
 - **Error**: blink red until the next prompt or a clean stop.
-- **Connected and idle**: LED off.
+- **Connected and idle**: one dim white heartbeat about every 4 s, so a healthy link is visible. Dark the rest of the time.
 - **USB powered but not linked to the Mac**: slow white breathe.
 
 BOOT prints the link and the three app states on serial, and runs a short color self-test.
