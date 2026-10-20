@@ -1,0 +1,11 @@
+# Python virtual environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+
+# Arduino / arduino-cli build output
+build/

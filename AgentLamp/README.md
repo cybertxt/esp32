@@ -180,6 +180,35 @@ Codex, `~/.codex/hooks.json`:
 
 Then run `/hooks` in Codex and trust the AgentLamp hook. Restart Cursor if a new prompt does not move the lamp.
 
+### SSH remote workspace
+
+When Cursor, CodeBuddy, or Codex runs against a workspace over SSH, the agent and its hooks execute on the remote machine. The remote hook cannot reach a bridge that only listens on the Mac. The fix is a reverse tunnel: remote port 8765 forwards back to the Mac, so the hook's unchanged `http://127.0.0.1:8765/event` lands on the Mac's bridge.
+
+On the Mac, add one line to that host's block in `~/.ssh/config`:
+
+```ssh-config
+Host your-remote-host
+  RemoteForward 18765 127.0.0.1:8765
+```
+
+The left port is on the remote machine, the right one is always the Mac's bridge. Pick any free remote port; 8765 itself is often taken (a busy remote port logs an SSH warning, the session itself is unaffected). Check with `ss -tln | grep <port>` on the remote.
+
+VS Code-based remotes (CodeBuddy, Cursor) launch the system `ssh`, which reads this file, so their next connect opens the tunnel. Reconnect the remote window after editing; hooks and settings are not hot-reloaded either.
+
+Then, on the remote machine:
+
+1. Copy the hook script: `scp AgentLamp/hook_report.py your-remote-host:agentlamp/`.
+2. Install the same hook events in the remote `~/.codebuddy/settings.json` (or the remote workspace's `.codebuddy/settings.json`), pointing at the remote copy of the script. When the tunnel does not use remote port 8765, prefix each command with `AGENTLAMP_BRIDGE=http://127.0.0.1:18765/event`.
+3. Verify from the remote machine: `curl http://127.0.0.1:18765/status` should print the Mac bridge state, and a remote agent turn should move the lamp.
+
+Notes:
+
+- The remote needs Python 3 (the hook is standard library only) and remote port 8765 free. A busy port logs an SSH warning; the session itself is unaffected.
+- Remote sessions report with their own session ids and merge with local ones; the strongest state still wins.
+- The CodeBuddy IDE hook set (seven events) has no `Notification`. Over SSH from the IDE you get working and idle, but no attention blink for permission prompts; the CodeBuddy CLI hook set keeps `Notification`.
+- Without a tunnel, run the bridge on `AGENTLAMP_HOST=0.0.0.0` and point the remote hook at the Mac with `AGENTLAMP_BRIDGE=http://<mac-ip>:8765/event`. That exposes the bridge on the network; prefer the tunnel.
+- If the tunnel drops, remote hooks fail after 0.4 s and the agent continues. The lamp falls back on the 15-minute session timeout.
+
 ### Another Mac
 
 Stop the bridge on this Mac, copy the repo to the other Mac, create the virtualenv, and start the bridge there. Install hooks on that Mac only if its own agents should drive the lamp. The board does not remember a host.

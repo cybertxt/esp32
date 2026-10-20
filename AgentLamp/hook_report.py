@@ -8,11 +8,12 @@ and this script never prints deny.
 """
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
 
-BRIDGE = "http://127.0.0.1:8765/event"
+BRIDGE = os.environ.get("AGENTLAMP_BRIDGE", "http://127.0.0.1:8765/event")
 APPS = {"cursor", "codebuddy", "codex"}
 
 

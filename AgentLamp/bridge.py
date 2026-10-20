@@ -8,6 +8,7 @@ installed; otherwise the same loop runs in the terminal.
 
 import asyncio
 import json
+import os
 import sys
 import threading
 import time
@@ -18,7 +19,7 @@ APPS = ("cursor", "codebuddy", "codex")
 RANK = {"idle": 0, "working": 1, "error": 2, "attention": 3}
 BYTE = {name: value for value, name in enumerate(("idle", "working", "error", "attention"))}
 TIMEOUT_S = 15 * 60
-HOST = "127.0.0.1"
+HOST = os.environ.get("AGENTLAMP_HOST", "127.0.0.1")
 PORT = 8765
 
 
