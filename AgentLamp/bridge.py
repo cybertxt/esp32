@@ -174,42 +174,55 @@ async def ble_loop():
 def run_menu():
     import rumps
 
+    marks = {"idle": "·", "working": "●", "error": "!", "attention": "?"}
+    choices = (
+        ("Auto", None),
+        ("Idle", "idle"),
+        ("Working", "working"),
+        ("Needs you", "attention"),
+        ("Error", "error"),
+    )
+
     class LampApp(rumps.App):
         def __init__(self):
+            # rumps adds its own "Quit" item when run() starts; never add one
+            # manually or the menu shows two Quit entries.
             super().__init__("AgentLamp", title="Lamp")
-            self.menu = ["Status", None]
+            self.status_item = rumps.MenuItem("Status")
+            self.menu = [self.status_item, None]
+            self._choice_items = {}
             for app in APPS:
-                self.menu.add(rumps.MenuItem(app))
-                for label, state in (
-                    ("Auto", None),
-                    ("Idle", "idle"),
-                    ("Working", "working"),
-                    ("Needs you", "attention"),
-                    ("Error", "error"),
-                ):
-                    item = rumps.MenuItem(f"{app}: {label}", callback=self._pick)
+                app_menu = rumps.MenuItem(app)
+                self._choice_items[app] = []
+                for label, state in choices:
+                    item = rumps.MenuItem(label, callback=self._pick)
                     item.app_name = app
                     item.lamp_state = state
-                    self.menu.add(item)
+                    app_menu.add(item)
+                    self._choice_items[app].append(item)
+                self.menu.add(app_menu)
                 self.menu.add(None)
-            self.menu.add(rumps.MenuItem("Quit", callback=rumps.quit_application))
             rumps.Timer(self._refresh, 1).start()
 
         def _pick(self, sender):
             LAMP.set_override(sender.app_name, sender.lamp_state)
+            self._refresh(None)
 
         def _refresh(self, _timer):
             snap = LAMP.snapshot()
-            bits = []
-            for app in APPS:
-                state = snap["apps"][app]
-                mark = {"idle": "·", "working": "●", "error": "!", "attention": "?"}[state]
-                bits.append(mark)
+            title = "Lamp " + "".join(marks[snap["apps"][app]] for app in APPS)
+            if title != self.title:
+                self.title = title
             link = "up" if snap["linked"] else "down"
-            self.title = "Lamp " + "".join(bits)
-            self.menu["Status"].title = f"Link {link}  " + "  ".join(
+            self.status_item.title = f"Link {link}  " + "  ".join(
                 f"{app} {snap['apps'][app]}" for app in APPS
             )
+            # Check the override item that matches the current override per app
+            # so the menu reflects the actual state ("Auto" = no override).
+            for app, items in self._choice_items.items():
+                override = snap["override"][app]
+                for item in items:
+                    item.state = 1 if item.lamp_state == override else 0
 
     LampApp().run()
 
