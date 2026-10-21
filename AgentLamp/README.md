@@ -71,10 +71,10 @@ Hooks return immediately and do not approve or block the agent. If the bridge is
 
 - `beforeSubmitPrompt` sets working.
 - `stop` sets idle, or error when `status` is `error`.
-- `beforeShellExecution` and `beforeMCPExecution` set attention when an unsandboxed call is still unfinished after about eight seconds (`AGENTLAMP_DEFER_S`). Cursor fires these hooks for every command, auto-run or waiting on an approval card, and the payload does not tell the two apart; deferring keeps routine commands "working" and only long-stuck calls blink. `afterShellExecution` and `afterMCPExecution` disarm the timer and return the session to working.
+- `beforeShellExecution` and `beforeMCPExecution` set attention when an unsandboxed call is still unfinished after about eight seconds (`AGENTLAMP_DEFER_S`). Cursor fires these hooks for every command, auto-run or waiting on an approval card, and the payload does not tell the two apart; deferring keeps routine commands "working" and only long-stuck calls blink. The deferral is keyed per call (`tool_use_id` on Cursor 3.24+, otherwise the command text), so one command finishing never cancels the timer of another that is still blocked on its approval card. `afterShellExecution` and `afterMCPExecution` disarm the timer and return the session to working. `postToolUseFailure` with a permission denial clears every pending timer for the session, so a denied card leaves no stray blink. The marker lives in `$TMPDIR/agentlamp-pending` and needs no cleanup.
 - `preToolUse` / `postToolUse` for the tool name `AskQuestion` set attention, then working again.
 
-Cursor has no hook that means “an approval card is on screen.” A turn that silently runs longer than the deferral still reads as "needs you". The deferral marker lives in `$TMPDIR/agentlamp-pending` and needs no cleanup. A reply that merely ends with a question mark is a finished turn, so the lamp goes idle. Cloud agents and Tab autocomplete do not move the lamp. Docs: [cursor.com/docs/hooks](https://cursor.com/docs/hooks).
+Cursor has no hook that means “an approval card is on screen.” A turn that silently runs longer than the deferral still reads as "needs you". A reply that merely ends with a question mark is a finished turn, so the lamp goes idle. Cloud agents and Tab autocomplete do not move the lamp. Docs: [cursor.com/docs/hooks](https://cursor.com/docs/hooks).
 
 **CodeBuddy Code CLI** (`~/.codebuddy/settings.json`, hooks beta since v1.16):
 
@@ -161,7 +161,8 @@ Cursor, `~/.cursor/hooks.json`:
     "beforeMCPExecution": [{ "command": "/usr/bin/python3 /ABS/PATH/AgentLamp/hook_report.py cursor before-mcp" }],
     "afterMCPExecution": [{ "command": "/usr/bin/python3 /ABS/PATH/AgentLamp/hook_report.py cursor after-mcp" }],
     "preToolUse": [{ "command": "/usr/bin/python3 /ABS/PATH/AgentLamp/hook_report.py cursor pre-tool", "matcher": "AskQuestion" }],
-    "postToolUse": [{ "command": "/usr/bin/python3 /ABS/PATH/AgentLamp/hook_report.py cursor post-tool", "matcher": "AskQuestion" }]
+    "postToolUse": [{ "command": "/usr/bin/python3 /ABS/PATH/AgentLamp/hook_report.py cursor post-tool", "matcher": "AskQuestion" }],
+    "postToolUseFailure": [{ "command": "/usr/bin/python3 /ABS/PATH/AgentLamp/hook_report.py cursor post-tool-failure", "matcher": "Shell" }]
   }
 }
 ```

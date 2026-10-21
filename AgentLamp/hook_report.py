@@ -56,21 +56,38 @@ def session_id(data):
     return "default"
 
 
-def marker_path(app, kind, session):
-    key = ("%s:%s:%s" % (app, kind, session)).encode()
+def marker_path(app, kind, session, call):
+    key = ("%s:%s:%s:%s" % (app, kind, session, call)).encode()
     return os.path.join(PENDING_DIR, hashlib.sha1(key).hexdigest() + ".json")
 
 
-def arm_attention(app, kind, session):
+def call_key(data):
+    """Identify one shell/MCP call across its before/after hook pair.
+
+    Keyed per call (not per conversation) so a completing command cannot
+    disarm the pending-approval timer of a different, still-blocked call.
+    tool_use_id arrives with Cursor 3.24+; the command text always does.
+    """
+    for key in ("tool_use_id", "command", "tool", "tool_name"):
+        value = data.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def arm_attention(app, kind, session, call):
     """Schedule attention for an unsandboxed call that never finishes."""
     try:
         os.makedirs(PENDING_DIR)
     except OSError:
         pass
-    path = marker_path(app, kind, session)
+    path = marker_path(app, kind, session, call)
     try:
         with open(path, "w") as f:
-            json.dump({"app": app, "session": session, "armed": time.time()}, f)
+            json.dump(
+                {"app": app, "session": session, "call": call, "armed": time.time()},
+                f,
+            )
     except OSError:
         return
     subprocess.Popen(
@@ -82,11 +99,31 @@ def arm_attention(app, kind, session):
     )
 
 
-def disarm_attention(app, kind, session):
+def disarm_attention(app, kind, session, call):
     try:
-        os.remove(marker_path(app, kind, session))
+        os.remove(marker_path(app, kind, session, call))
     except OSError:
         pass
+
+
+def disarm_session(app, session):
+    """Drop every pending deferral for a session (a call never ran)."""
+    try:
+        names = os.listdir(PENDING_DIR)
+    except OSError:
+        return
+    for name in names:
+        path = os.path.join(PENDING_DIR, name)
+        try:
+            with open(path) as f:
+                info = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if info.get("app") == app and info.get("session") == session:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def deferred_attention(path):
@@ -132,10 +169,23 @@ def main():
         emit(None)
     if app == "cursor" and event in ("before-shell", "before-mcp"):
         if data.get("sandbox") is not True:
-            arm_attention(app, "shell" if event == "before-shell" else "mcp", session)
+            kind = "shell" if event == "before-shell" else "mcp"
+            arm_attention(app, kind, session, call_key(data))
         emit({"permission": "allow"})
     if app == "cursor" and event in ("after-shell", "after-mcp"):
-        disarm_attention(app, "shell" if event == "after-shell" else "mcp", session)
+        kind = "shell" if event == "after-shell" else "mcp"
+        # Disarm both the specific call and the bare-session fallback slot.
+        disarm_attention(app, kind, session, call_key(data))
+        disarm_attention(app, kind, session, "")
+        post(app, session, "working")
+        emit(None)
+    if app == "cursor" and event == "post-tool-failure":
+        # postToolUseFailure: the call failed. When it was denied, it never
+        # ran, so no after event will come; clear the whole session slot.
+        why = str(data.get("failure_type") or data.get("failure") or "")
+        disarm_attention(app, "shell", session, call_key(data))
+        if not why or "permission" in why or "denied" in why:
+            disarm_session(app, session)
         post(app, session, "working")
         emit(None)
     if app == "cursor" and event == "pre-tool":
