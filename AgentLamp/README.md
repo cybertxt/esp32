@@ -71,10 +71,10 @@ Hooks return immediately and do not approve or block the agent. If the bridge is
 
 - `beforeSubmitPrompt` sets working.
 - `stop` sets idle, or error when `status` is `error`.
-- `beforeShellExecution` and `beforeMCPExecution` set attention when `sandbox` is false. A sandboxed auto-run stays working. `afterShellExecution` and `afterMCPExecution` return the session to working.
+- `beforeShellExecution` and `beforeMCPExecution` set attention when an unsandboxed call is still unfinished after about eight seconds (`AGENTLAMP_DEFER_S`). Cursor fires these hooks for every command, auto-run or waiting on an approval card, and the payload does not tell the two apart; deferring keeps routine commands "working" and only long-stuck calls blink. `afterShellExecution` and `afterMCPExecution` disarm the timer and return the session to working.
 - `preToolUse` / `postToolUse` for the tool name `AskQuestion` set attention, then working again.
 
-Cursor has no hook that means “an approval card is on screen.” An unsandboxed command that Cursor auto-runs still looks like “needs you” for the whole command. A reply that merely ends with a question mark is a finished turn, so the lamp goes idle. Cloud agents and Tab autocomplete do not move the lamp. Docs: [cursor.com/docs/hooks](https://cursor.com/docs/hooks).
+Cursor has no hook that means “an approval card is on screen.” A turn that silently runs longer than the deferral still reads as "needs you". The deferral marker lives in `$TMPDIR/agentlamp-pending` and needs no cleanup. A reply that merely ends with a question mark is a finished turn, so the lamp goes idle. Cloud agents and Tab autocomplete do not move the lamp. Docs: [cursor.com/docs/hooks](https://cursor.com/docs/hooks).
 
 **CodeBuddy Code CLI** (`~/.codebuddy/settings.json`, hooks beta since v1.16):
 
@@ -129,7 +129,7 @@ AgentLamp/.venv/bin/pip install -r AgentLamp/requirements.txt
 AgentLamp/.venv/bin/python AgentLamp/bridge.py
 ```
 
-Allow Bluetooth for the terminal or Python process when macOS asks. Leave the process running. The menu-bar title is `Lamp` plus three marks, in order Cursor, CodeBuddy, Codex:
+Allow Bluetooth for the terminal or Python process when macOS asks. Leave the process running. The menu bar shows a lamp icon plus three marks, in order Cursor, CodeBuddy, Codex (no icon file means the text `Lamp` is used instead):
 
 | Mark | State |
 | --- | --- |
@@ -140,7 +140,9 @@ Allow Bluetooth for the terminal or Python process when macOS asks. Leave the pr
 
 Each app has Auto, Idle, Working, Needs you, and Error. Auto follows the hooks. The other four override that app until you choose Auto again. `--terminal` skips the menu and logs in the shell.
 
-`GET http://127.0.0.1:8765/status` returns the link and the three states. `POST /event` with `{"app","session","state"}` is what the hooks send. `POST /override` with `{"app","state"}` sets a manual state; `state: null` clears it.
+`GET http://127.0.0.1:8765/status` returns the link and the three states, plus how long since each app's last hook event and the bytes the board last echoed. `POST /event` with `{"app","session","state"}` is what the hooks send. `POST /override` with `{"app","state"}` sets a manual state; `state: null` clears it.
+
+The icon in the menu bar is a plain template PNG. It lives in [lamp_icon.png](lamp_icon.png); [tools/make_icon.py](tools/make_icon.py) regenerates it. To check the state logic without hardware, run `python3 -m unittest discover -s AgentLamp/tests -p "test_*.py"`.
 
 ### 3. Install hooks on that same Mac
 

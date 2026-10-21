@@ -28,6 +28,9 @@ class LampState:
         self._lock = threading.Lock()
         self._sessions = {app: {} for app in APPS}
         self._override = {app: None for app in APPS}
+        # Monotonic time of the last accepted hook event, per app. Used to
+        # show how long since each app last reported (visible in the menu).
+        self._last_event = {app: None for app in APPS}
         self.linked = False
         self.echo = b""
 
@@ -36,6 +39,7 @@ class LampState:
             return False
         now = time.monotonic()
         with self._lock:
+            self._last_event[app] = now
             bucket = self._sessions[app]
             if state == "idle":
                 bucket.pop(session, None)
@@ -67,6 +71,17 @@ class LampState:
                 "linked": self.linked,
                 "apps": {app: self._app_state(app) for app in APPS},
                 "override": dict(self._override),
+                # Seconds since each app's last accepted hook event, or None.
+                "ages": {
+                    app: (
+                        round(now - self._last_event[app], 1)
+                        if self._last_event[app] is not None
+                        else None
+                    )
+                    for app in APPS
+                },
+                # The three bytes the board last echoed back, for diagnostics.
+                "echo": list(self.echo),
             }
 
     def set_linked(self, linked):
@@ -106,7 +121,13 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, LAMP.snapshot())
 
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length > 65536:
+            self._send(400, {"error": "too large"})
+            return
         raw = self.rfile.read(length) if length else b""
         try:
             body = json.loads(raw.decode() or "{}")
@@ -174,6 +195,7 @@ async def ble_loop():
 def run_menu():
     import rumps
 
+    icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lamp_icon.png")
     marks = {"idle": "·", "working": "●", "error": "!", "attention": "?"}
     choices = (
         ("Auto", None),
@@ -187,7 +209,16 @@ def run_menu():
         def __init__(self):
             # rumps adds its own "Quit" item when run() starts; never add one
             # manually or the menu shows two Quit entries.
-            super().__init__("AgentLamp", title="Lamp")
+            have_icon = os.path.exists(icon)
+            # Template mode renders the lamp shape black/white to match the
+            # menu bar in light and dark mode; the marks carry the state.
+            super().__init__(
+                "AgentLamp",
+                title=None if have_icon else "Lamp",
+                icon=icon if have_icon else None,
+                template=True,
+            )
+            self._last_status = None
             self.status_item = rumps.MenuItem("Status")
             self.menu = [self.status_item, None]
             self._choice_items = {}
@@ -210,19 +241,32 @@ def run_menu():
 
         def _refresh(self, _timer):
             snap = LAMP.snapshot()
-            title = "Lamp " + "".join(marks[snap["apps"][app]] for app in APPS)
+            title = "".join(marks[snap["apps"][app]] for app in APPS)
             if title != self.title:
                 self.title = title
             link = "up" if snap["linked"] else "down"
-            self.status_item.title = f"Link {link}  " + "  ".join(
-                f"{app} {snap['apps'][app]}" for app in APPS
+            status = "Link {}  ".format(link) + "  ".join(
+                self._app_line(app, snap) for app in APPS
             )
+            if status != self._last_status:
+                self.status_item.title = status
+                self._last_status = status
             # Check the override item that matches the current override per app
             # so the menu reflects the actual state ("Auto" = no override).
             for app, items in self._choice_items.items():
                 override = snap["override"][app]
                 for item in items:
                     item.state = 1 if item.lamp_state == override else 0
+
+        @staticmethod
+        def _app_line(app, snap):
+            kind = snap["apps"][app]
+            age = snap["ages"].get(app)
+            if age is None:
+                return f"{app} {kind} (never reported)"
+            if age < 90:
+                return f"{app} {kind} ({int(age)}s ago)"
+            return f"{app} {kind} ({int(age // 60)}m ago)"
 
     LampApp().run()
 
