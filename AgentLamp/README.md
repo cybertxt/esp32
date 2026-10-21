@@ -46,7 +46,7 @@ flowchart LR
 ```
 
 1. A hook runs on the Mac and POSTs one JSON event to `http://127.0.0.1:8765/event`.
-2. [bridge.py](bridge.py) keeps a set of session ids per app. The byte it sends is the strongest state among that app’s sessions: attention, then error, then working, then idle. A session with no further event for 15 minutes is dropped.
+2. [bridge.py](bridge.py) keeps a set of session ids per app. The byte it sends is the strongest state among that app’s sessions: attention, then error, then working, then idle. A quiet `working` session falls back to idle after 3 minutes (`AGENTLAMP_WORKING_TTL_S`) — a turn whose `stop` event was lost no longer pins the lamp. `error` and `attention` sessions drop after 15 minutes.
 3. The bridge scans for the BLE name `AgentLamp` and writes three bytes to one GATT characteristic. The board notifies the same three bytes back.
 
 The ESP32-S3 has BLE 5 only. Classic Bluetooth serial is not available, so the Mac must use CoreBluetooth. The bridge does that through Python `bleak`. Only one bridge can hold the connection. A second Mac must stop the first bridge before it connects.
@@ -140,7 +140,7 @@ Allow Bluetooth for the terminal or Python process when macOS asks. Leave the pr
 
 Each app has Auto, Idle, Working, Needs you, and Error. Auto follows the hooks. The other four override that app until you choose Auto again. `--terminal` skips the menu and logs in the shell.
 
-`GET http://127.0.0.1:8765/status` returns the link and the three states, plus how long since each app's last hook event and the bytes the board last echoed. `POST /event` with `{"app","session","state"}` is what the hooks send. `POST /override` with `{"app","state"}` sets a manual state; `state: null` clears it.
+`GET http://127.0.0.1:8765/status` returns the link and the three states, the live sessions behind them, how long since each app's last hook event, and the bytes the board last echoed. `POST /event` with `{"app","session","state"}` is what the hooks send. `POST /override` with `{"app","state"}` sets a manual state; `state: null` clears it.
 
 The icon in the menu bar is a plain template PNG. It lives in [lamp_icon.png](lamp_icon.png); [tools/make_icon.py](tools/make_icon.py) regenerates it. To check the state logic without hardware, run `python3 -m unittest discover -s AgentLamp/tests -p "test_*.py"`.
 

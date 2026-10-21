@@ -51,18 +51,47 @@ class LampStateTests(unittest.TestCase):
 
     def test_sessions_expire_after_timeout(self):
         lamp = bridge.LampState()
-        lamp.event("cursor", "old", "working")
-        lamp.event("cursor", "fresh", "working")
-        # Backdate one session past the timeout, as a crashed hook would leave.
+        lamp.event("cursor", "attention-session", "attention")
+        old = time.monotonic() - bridge.TIMEOUT_S - 1
         with lamp._lock:
-            seen = time.monotonic() - bridge.TIMEOUT_S - 1
-            lamp._sessions["cursor"]["old"] = ("working", seen)
-        self.assertEqual(lamp.snapshot()["apps"]["cursor"], "working")
-        # Once the fresh session also expires, the app reads idle again.
+            # Both an old attention session past the long TTL and a working
+            # session past the (shorter) working TTL are reaped.
+            lamp._sessions["cursor"]["old-attention"] = ("attention", old)
+            lamp._sessions["cursor"]["old-working"] = (
+                "working",
+                time.monotonic() - bridge.WORKING_TIMEOUT_S - 1,
+            )
+        snap = lamp.snapshot()
+        self.assertEqual(snap["apps"]["cursor"], "attention")
+        labels = [s["session"] for s in snap["sessions"]["cursor"]]
+        self.assertEqual(labels, ["attention-se"])
+
+    def test_stale_working_expires_faster_than_attention(self):
+        lamp = bridge.LampState()
+        lamp.event("cursor", "still-waiting", "attention")
         with lamp._lock:
-            for key, (_, _) in list(lamp._sessions["cursor"].items()):
-                lamp._sessions["cursor"][key] = ("working", seen)
-        self.assertEqual(lamp.snapshot()["apps"]["cursor"], "idle")
+            lamp._sessions["cursor"]["stale-working"] = (
+                "working",
+                time.monotonic() - bridge.WORKING_TIMEOUT_S - 1,
+            )
+        snap = lamp.snapshot()
+        self.assertEqual(snap["apps"]["cursor"], "attention")
+        labels = [s["session"] for s in snap["sessions"]["cursor"]]
+        self.assertIn("still-waitin", labels)
+        self.assertNotIn("stale-worki", labels)
+        # A fresh working session is untouched by the short TTL.
+        lamp.event("cursor", "fresh-work", "working")
+        labels = [s["session"] for s in lamp.snapshot()["sessions"]["cursor"]]
+        self.assertIn("fresh-work", labels)
+
+    def test_snapshot_lists_sessions(self):
+        lamp = bridge.LampState()
+        lamp.event("cursor", "abcd1234ef5678", "working")
+        entries = lamp.snapshot()["sessions"]["cursor"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["session"], "abcd1234ef56")
+        self.assertEqual(entries[0]["state"], "working")
+        self.assertLessEqual(entries[0]["age_s"], 2)
 
     def test_snapshot_exposes_echo_and_ages(self):
         lamp = bridge.LampState()

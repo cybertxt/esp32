@@ -19,6 +19,18 @@ APPS = ("cursor", "codebuddy", "codex")
 RANK = {"idle": 0, "working": 1, "error": 2, "attention": 3}
 BYTE = {name: value for value, name in enumerate(("idle", "working", "error", "attention"))}
 TIMEOUT_S = 15 * 60
+# A "working" session with no events for this long falls back to idle.
+# Stop events can be lost (interrupted turns, a background command that
+# finishes after its turn ended) and must not pin the lamp at "working"
+# for the full TIMEOUT_S. Attention keeps the long TTL: a question can
+# legitimately wait on the user for a long time.
+WORKING_TIMEOUT_S = int(os.environ.get("AGENTLAMP_WORKING_TTL_S", "180"))
+STATE_TTL = {
+    "idle": 0,
+    "working": WORKING_TIMEOUT_S,
+    "error": TIMEOUT_S,
+    "attention": TIMEOUT_S,
+}
 HOST = os.environ.get("AGENTLAMP_HOST", "127.0.0.1")
 PORT = 8765
 
@@ -80,6 +92,21 @@ class LampState:
                     )
                     for app in APPS
                 },
+                # Live sessions per app, so a stale one is visible at a
+                # glance instead of hiding inside the aggregate state.
+                "sessions": {
+                    app: [
+                        {
+                            "session": key[:12],
+                            "state": state,
+                            "age_s": round(now - seen, 1),
+                        }
+                        for key, (state, seen) in sorted(
+                            self._sessions[app].items()
+                        )
+                    ]
+                    for app in APPS
+                },
                 # The three bytes the board last echoed back, for diagnostics.
                 "echo": list(self.echo),
             }
@@ -94,7 +121,11 @@ class LampState:
 
     def _expire(self, now):
         for bucket in self._sessions.values():
-            stale = [key for key, (_, seen) in bucket.items() if now - seen > TIMEOUT_S]
+            stale = [
+                key
+                for key, (state, seen) in bucket.items()
+                if now - seen > STATE_TTL.get(state, TIMEOUT_S)
+            ]
             for key in stale:
                 del bucket[key]
 
