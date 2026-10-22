@@ -69,7 +69,7 @@ class CaptureServer:
             item = self.posts.get(timeout=timeout)
         except queue.Empty:
             return
-        self.fail("unexpected post: %r" % (item,))
+        raise AssertionError("unexpected post: %r" % (item,))
 
 
 class HookReportTests(unittest.TestCase):
@@ -174,6 +174,26 @@ class HookReportTests(unittest.TestCase):
                       '{"conversation_id":"t1","command":"ls","sandbox":true}')
         self.server.assert_no_post()
         self.server.assert_no_post(timeout=1.5)
+
+    def test_executing_command_does_not_flag(self):
+        # A command that is genuinely running must read "working", not
+        # "needs you": the deferred child gates on process liveness.
+        cmd = ('python3 -c "import time; time.sleep(120); '
+               'print(\'agentlamp-gate-sig-xyzzy-0123\')"')
+        running = subprocess.Popen([cmd], shell=True)
+        try:
+            self.run_hook("cursor", "before-shell",
+                          '{"conversation_id":"t1","command":%s,"sandbox":false}'
+                          % json.dumps(cmd))
+            # DEFER_S is 1s here; the child re-checks, finds the process
+            # alive, and must not post attention while it runs.
+            self.server.assert_no_post(timeout=3.0)
+        finally:
+            running.terminate()
+            running.wait(timeout=5)
+        # Process gone and no after event: now it is genuinely stuck.
+        post = self.server.next_post(timeout=4.0)
+        self.assertEqual(post["state"], "attention")
 
     def test_codebuddy_pre_tool_defers_attention(self):
         out = self.run_hook("codebuddy", "pre-tool",

@@ -10,6 +10,7 @@ response that actually stops work, and this script never prints deny.
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -92,6 +93,70 @@ def marker_path(app, kind, session, call):
     return os.path.join(PENDING_DIR, hashlib.sha1(key).hexdigest() + ".json")
 
 
+def call_signature(data):
+    """Command text used to tell 'executing' from 'waiting on approval'.
+
+    When the armed call is actually running, a process holding this text
+    exists on this machine; an approval-pending call has spawned nothing.
+    Too-short text would match unrelated processes, so it is skipped and
+    the liveness gate is not applied.
+    """
+    candidates = [data.get("command")]
+    tool_input = data.get("tool_input")
+    if isinstance(tool_input, dict):
+        candidates.append(tool_input.get("command"))
+    for source in candidates:
+        if isinstance(source, str) and len(source.strip()) >= 16:
+            return source.strip()[:64]
+    return ""
+
+
+def _sig_pattern(tokens):
+    """ERE for a token run, tolerant of shell quoting differences.
+
+    The hook payload holds the raw shell string, but the process table
+    holds argv: outer quotes vanish, inner quotes survive. Splitting each
+    token on quote characters and rejoining with an optional quote class
+    matches both spellings.
+    """
+    parts = []
+    for token in tokens:
+        segments = re.split("['\"]", token)
+        parts.append("['\"]?".join(re.escape(s) for s in segments))
+    # pgrep uses POSIX ERE, which has no \s shorthand.
+    return r"[[:space:]]+".join(parts)
+
+
+def process_running(sig):
+    """True when a process whose command line matches `sig` is alive.
+
+    Leading tokens can resolve differently in the process table (python3
+    becomes /Applications/.../Python, `cd x && ...` loses its prefix), so
+    a few progressively shorter token runs are tried.
+    """
+    tokens = sig.split()
+    if not tokens:
+        return False
+    try:
+        for drop in (0, 1, 2):
+            pattern = _sig_pattern(tokens[drop:])
+            if not pattern:
+                continue
+            result = subprocess.run(
+                ["pgrep", "-f", pattern],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            )
+            if result.returncode == 0:
+                return True
+        return False
+    except (OSError, subprocess.TimeoutExpired):
+        # pgrep missing or stuck: keep the old behaviour (blink) rather
+        # than silently swallowing a real "needs you".
+        return False
+
+
 def call_key(data):
     """Identify one shell/MCP call across its before/after hook pair.
 
@@ -106,7 +171,7 @@ def call_key(data):
     return ""
 
 
-def arm_attention(app, kind, session, call):
+def arm_attention(app, kind, session, call, sig=""):
     """Schedule attention for an unsandboxed call that never finishes."""
     try:
         os.makedirs(PENDING_DIR)
@@ -116,7 +181,13 @@ def arm_attention(app, kind, session, call):
     try:
         with open(path, "w") as f:
             json.dump(
-                {"app": app, "session": session, "call": call, "armed": time.time()},
+                {
+                    "app": app,
+                    "session": session,
+                    "call": call,
+                    "sig": sig,
+                    "armed": time.time(),
+                },
                 f,
             )
     except OSError:
@@ -158,22 +229,30 @@ def disarm_session(app, session):
 
 
 def deferred_attention(path):
-    """Child process: post attention unless a newer call re-armed the slot."""
-    time.sleep(DEFER_S)
-    try:
-        with open(path) as f:
-            info = json.load(f)
-    except (OSError, ValueError):
+    """Child: blink only when the call is neither finished nor running.
+
+    A command that is merely executing keeps its process alive: that is
+    "working", not "needs you", so the child keeps waiting. Only a call
+    that has neither completed (marker disarmed) nor started (no matching
+    process) is actually blocked on a human decision.
+    """
+    while True:
+        time.sleep(DEFER_S)
+        try:
+            with open(path) as f:
+                info = json.load(f)
+        except (OSError, ValueError):
+            return  # disarmed: the call finished or the turn is over
+        if time.time() - info.get("armed", 0) < DEFER_S - 0.5:
+            continue  # a newer identical call re-armed the slot
+        if info.get("sig") and process_running(info.get("sig")):
+            continue  # the command is executing; keep the lamp "working"
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        post(info.get("app"), info.get("session"), "attention")
         return
-    elapsed = time.time() - info.get("armed", 0)
-    if elapsed < DEFER_S - 0.5:
-        # A newer call replaced the marker; its own child will handle it.
-        return
-    try:
-        os.remove(path)
-    except OSError:
-        pass
-    post(info.get("app"), info.get("session"), "attention")
 
 
 def main():
@@ -204,7 +283,7 @@ def main():
     if app == "cursor" and event in ("before-shell", "before-mcp"):
         if data.get("sandbox") is not True:
             kind = "shell" if event == "before-shell" else "mcp"
-            arm_attention(app, kind, session, call_key(data))
+            arm_attention(app, kind, session, call_key(data), call_signature(data))
         emit({"permission": "allow"})
     if app == "cursor" and event in ("after-shell", "after-mcp"):
         kind = "shell" if event == "after-shell" else "mcp"
@@ -249,7 +328,7 @@ def main():
         # PreToolUse fires while the call may sit on an approval card, so
         # arm the same deferred attention Cursor's shell hooks use: quick
         # calls stay working, a stuck call blinks after DEFER_S.
-        arm_attention(app, "tool", session, call_key(data))
+        arm_attention(app, "tool", session, call_key(data), call_signature(data))
         emit(None)
     if app == "codebuddy" and event == "post-tool":
         disarm_attention(app, "tool", session, call_key(data))
