@@ -175,6 +175,42 @@ class HookReportTests(unittest.TestCase):
         self.server.assert_no_post()
         self.server.assert_no_post(timeout=1.5)
 
+    def test_codebuddy_pre_tool_defers_attention(self):
+        out = self.run_hook("codebuddy", "pre-tool",
+                            '{"session_id":"cb1","tool_name":"Bash"}')
+        self.assertEqual(out, "")
+        # No permission decision output: CodeBuddy keeps its own prompt.
+        self.server.assert_no_post()
+        post = self.server.next_post(timeout=4.0)
+        self.assertEqual(post, {"app": "codebuddy", "session": "cb1",
+                                "state": "attention"})
+
+    def test_codebuddy_post_tool_disarms(self):
+        self.run_hook("codebuddy", "pre-tool",
+                      '{"session_id":"cb1","tool_name":"Bash"}')
+        self.run_hook("codebuddy", "post-tool",
+                      '{"session_id":"cb1","tool_name":"Bash"}')
+        post = self.server.next_post()
+        self.assertEqual(post["state"], "working")
+        self.server.assert_no_post(timeout=2.5)
+
+    def test_codebuddy_notify_types(self):
+        self.run_hook("codebuddy", "notify",
+                      '{"session_id":"cb1","notification_type":"elicitation_dialog"}')
+        self.assertEqual(self.server.next_post()["state"], "attention")
+        self.run_hook("codebuddy", "notify",
+                      '{"session_id":"cb1","notification_type":"auth_success"}')
+        self.server.assert_no_post()
+
+    def test_codebuddy_stop_clears_pending(self):
+        self.run_hook("codebuddy", "pre-tool",
+                      '{"session_id":"cb1","tool_name":"Bash"}')
+        self.run_hook("codebuddy", "stop", '{"session_id":"cb1"}')
+        self.assertEqual(self.server.next_post()["state"], "idle")
+        self.server.assert_no_post(timeout=2.5)
+        pending = os.listdir(os.path.join(self.tmp, "agentlamp-pending"))
+        self.assertEqual(pending, [])
+
     def test_garbage_input_is_safe(self):
         out = self.run_hook("cursor", "post-tool", "this is not json")
         self.assertEqual(out, "")

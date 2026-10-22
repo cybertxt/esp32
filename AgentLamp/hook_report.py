@@ -26,6 +26,37 @@ APPS = {"cursor", "codebuddy", "codex"}
 # auto-run commands. Calls that finish disarm the marker before it fires.
 DEFER_S = float(os.environ.get("AGENTLAMP_DEFER_S", "8"))
 PENDING_DIR = os.path.join(tempfile.gettempdir(), "agentlamp-pending")
+LOG_PATH = os.path.join(tempfile.gettempdir(), "agentlamp-hooks.log")
+LOG_MAX = 256 * 1024
+
+
+def log_event(app, event, data):
+    """Append one compact line per hook call for later diagnosis."""
+    info = {"ts": round(time.time(), 3), "app": app, "event": event}
+    try:
+        info["session"] = session_id(data)
+    except Exception:
+        pass
+    for key in (
+        "notification_type",
+        "tool_name",
+        "tool",
+        "sandbox",
+        "status",
+        "failure_type",
+    ):
+        if key in data:
+            info[key] = data.get(key)
+    command = data.get("command")
+    if isinstance(command, str):
+        info["command"] = command[:80]
+    try:
+        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > LOG_MAX:
+            os.remove(LOG_PATH)
+        with open(LOG_PATH, "a") as f:
+            f.write(json.dumps(info) + "\n")
+    except OSError:
+        pass
 
 
 def emit(payload):
@@ -160,11 +191,14 @@ def main():
     if not isinstance(data, dict):
         data = {}
     session = session_id(data)
+    log_event(app, event, data)
 
     if app == "cursor" and event == "before-submit":
         post(app, session, "working")
         emit({"continue": True})
     if app == "cursor" and event == "stop":
+        # The turn is over: any deferral still armed for this session is moot.
+        disarm_session(app, session)
         post(app, session, "error" if data.get("status") == "error" else "idle")
         emit(None)
     if app == "cursor" and event in ("before-shell", "before-mcp"):
@@ -201,14 +235,25 @@ def main():
         post(app, session, "working")
         emit(None)
     if app == "codebuddy" and event == "stop":
+        disarm_session(app, session)
         post(app, session, "idle")
         emit(None)
     if app == "codebuddy" and event == "notify":
+        # The IDE build ships no Notification call sites; when a surface
+        # does send one, these types mean the agent is blocked on you.
         kind = data.get("notification_type")
-        if kind in ("permission_prompt", "idle_prompt"):
+        if kind in ("permission_prompt", "idle_prompt", "elicitation_dialog"):
             post(app, session, "attention")
         emit(None)
+    if app == "codebuddy" and event == "pre-tool":
+        # PreToolUse fires while the call may sit on an approval card, so
+        # arm the same deferred attention Cursor's shell hooks use: quick
+        # calls stay working, a stuck call blinks after DEFER_S.
+        arm_attention(app, "tool", session, call_key(data))
+        emit(None)
     if app == "codebuddy" and event == "post-tool":
+        disarm_attention(app, "tool", session, call_key(data))
+        disarm_attention(app, "tool", session, "")
         post(app, session, "working")
         emit(None)
 

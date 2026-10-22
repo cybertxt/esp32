@@ -76,13 +76,12 @@ Hooks return immediately and do not approve or block the agent. If the bridge is
 
 Cursor has no hook that means “an approval card is on screen.” A turn that silently runs longer than the deferral still reads as "needs you". A reply that merely ends with a question mark is a finished turn, so the lamp goes idle. Cloud agents and Tab autocomplete do not move the lamp. Docs: [cursor.com/docs/hooks](https://cursor.com/docs/hooks).
 
-**CodeBuddy Code CLI** (`~/.codebuddy/settings.json`, hooks beta since v1.16):
+**CodeBuddy** (`~/.codebuddy/settings.json`, hooks beta since v1.16):
 
-- `UserPromptSubmit` sets working. `Stop` sets idle.
-- `Notification` with `permission_prompt` or `idle_prompt` (waiting about 60 seconds) sets attention.
-- The next `PostToolUse`, `UserPromptSubmit`, or `Stop` clears attention.
-
-The CodeBuddy IDE plugin is a different surface and is not covered. Docs: [codebuddy.ai/docs/cli/hooks](https://www.codebuddy.ai/docs/cli/hooks).
+- `UserPromptSubmit` sets working. `Stop` sets idle and clears pending timers.
+- `Notification` runs without a matcher so every type reaches the hook; `permission_prompt`, `idle_prompt`, and `elicitation_dialog` set attention, other types are ignored. The IDE build defines these notification calls but never invokes them, so do not rely on `Notification` for approval cards in the IDE.
+- `PreToolUse` arms the same deferred attention Cursor's shell hooks use: a tool call that stays unresolved for `AGENTLAMP_DEFER_S` blinks. This is what catches approval cards in the IDE. `PostToolUse` disarms the timer and returns to working.
+- Every hook invocation is appended to `$TMPDIR/agentlamp-hooks.log` (256 KB cap) so silent surfaces are easy to diagnose. Docs: [codebuddy.ai/docs/cli/hooks](https://www.codebuddy.ai/docs/cli/hooks).
 
 **Codex** (`~/.codex/hooks.json`), not the normal ChatGPT desktop chat:
 
@@ -171,7 +170,8 @@ CodeBuddy, inside `~/.codebuddy/settings.json`, a `hooks` object:
 
 - `UserPromptSubmit` → `codebuddy prompt`
 - `Stop` → `codebuddy stop`
-- `Notification` matchers `permission_prompt` and `idle_prompt` → `codebuddy notify`
+- `Notification` (no matcher) → `codebuddy notify`
+- `PreToolUse` → `codebuddy pre-tool`
 - `PostToolUse` → `codebuddy post-tool`
 
 Codex, `~/.codex/hooks.json`:
