@@ -45,7 +45,7 @@ flowchart LR
   bridge -->|BLE write, 3 bytes| esp
 ```
 
-1. A hook runs on the Mac and POSTs one JSON event to `http://127.0.0.1:8765/event`.
+1. A hook runs alongside the agent and POSTs one JSON event to the bridge. Local hooks use `http://127.0.0.1:8765/event`; remote hooks reach the same endpoint through the SSH tunnel described below. The Mac bridge also follows Cursor's local renderer log for the native approval-card lifecycle that Cursor hooks do not expose.
 2. [bridge.py](bridge.py) keeps a set of session ids per app. The byte it sends is the strongest state among that app’s sessions: attention, then error, then working, then idle. A quiet `working` session falls back to idle after 3 minutes (`AGENTLAMP_WORKING_TTL_S`) — a turn whose `stop` event was lost no longer pins the lamp. `error` and `attention` sessions drop after 15 minutes.
 3. The bridge scans for the BLE name `AgentLamp` and writes three bytes to one GATT characteristic. The board notifies the same three bytes back.
 
@@ -73,12 +73,13 @@ Hooks return immediately and do not approve or block the agent. If the bridge is
 - `stop` sets idle, or error when `status` is `error`.
 - `beforeShellExecution` and `beforeMCPExecution` are observation-only; they fire as execution begins and do not identify an approval card. `afterShellExecution`, `afterMCPExecution`, and `postToolUseFailure` return the session to working.
 - `preToolUse` / `postToolUse` for the tool name `AskQuestion` set attention, then working again.
+- The Mac bridge follows current `renderer.log` files. Cursor logs `user-approval-requested` with the composer id when its native approval card appears, and `agent-loop-resumed` when the user answers; these set attention and working respectively. Existing logs are opened at EOF so restarting the bridge never replays an old card. The bridge must already be running when the approval appears; an approval that was already open during a bridge restart is intentionally not restored. This works for local and SSH-remote workspaces because the approval UI and renderer log live on the Mac.
 
-Cursor has no hook that means “an approval card is on screen.” Command execution is therefore never guessed as attention: guessing inverted the states in practice (running commands became "needs you", while the real approval card emitted no event and stayed "working"). Explicit `AskQuestion` calls still report attention. A reply that merely ends with a question mark is a finished turn, so the lamp goes idle. Cloud agents and Tab autocomplete do not move the lamp. Docs: [cursor.com/docs/hooks](https://cursor.com/docs/hooks).
+Cursor has no public hook that means “an approval card is on screen,” so command duration is never guessed as attention. The renderer-log lifecycle is an internal Cursor 3.27.6 signal and may need adjustment if Cursor changes its log format. Explicit `AskQuestion` calls still report attention. A reply that merely ends with a question mark is a finished turn, so the lamp goes idle. Cloud agents and Tab autocomplete do not move the lamp. Docs: [cursor.com/docs/hooks](https://cursor.com/docs/hooks).
 
 **CodeBuddy** (`~/.codebuddy/settings.json`, hooks beta since v1.16):
 
-- `UserPromptSubmit` sets working. `Stop` sets idle and clears pending timers.
+- `UserPromptSubmit` sets working. CodeBuddy emits tool events for parent and child/subagent session ids but reports `Stop` only for the parent. `Stop` therefore clears every CodeBuddy session, preventing an orphaned child session from pinning the lamp at working.
 - `Notification` runs without a matcher so every type reaches the hook; `permission_prompt`, `idle_prompt`, and `elicitation_dialog` set attention, other types are ignored. The IDE build defines these notification calls but never invokes them, so do not rely on `Notification` for approval cards in the IDE.
 - `PreToolUse` is observation-only because the IDE does not distinguish “about to execute” from “waiting for approval.” `PostToolUse` returns to working.
 - Every hook invocation is appended to `$TMPDIR/agentlamp-hooks.log` (256 KB cap) so silent surfaces are easy to diagnose. Docs: [codebuddy.ai/docs/cli/hooks](https://www.codebuddy.ai/docs/cli/hooks).
@@ -139,7 +140,7 @@ Allow Bluetooth for the terminal or Python process when macOS asks. Leave the pr
 
 Each app has Auto, Idle, Working, Needs you, and Error. Auto follows the hooks. The other four override that app until you choose Auto again. `--terminal` skips the menu and logs in the shell.
 
-`GET http://127.0.0.1:8765/status` returns the link and the three states, the live sessions behind them, how long since each app's last hook event, and the bytes the board last echoed. `POST /event` with `{"app","session","state"}` is what the hooks send. `POST /override` with `{"app","state"}` sets a manual state; `state: null` clears it.
+`GET http://127.0.0.1:8765/status` returns the link and the three states, the live sessions behind them, how long since each app's last hook event, and the bytes the board last echoed. `POST /event` with `{"app","session","state"}` is what the hooks send. An idle event with `"session":"*"` clears every session for that app; the bridge rejects `*` for non-idle states. `POST /override` with `{"app","state"}` sets a manual state; `state: null` clears it.
 
 The icon in the menu bar is a plain template PNG. It lives in [lamp_icon.png](lamp_icon.png); [tools/make_icon.py](tools/make_icon.py) regenerates it. To check the state logic without hardware, run `python3 -m unittest discover -s AgentLamp/tests -p "test_*.py"`.
 
@@ -185,7 +186,7 @@ Then run `/hooks` in Codex and trust the AgentLamp hook. Restart Cursor if a new
 
 ### SSH remote workspace
 
-When Cursor, CodeBuddy, or Codex runs against a workspace over SSH, the agent and its hooks execute on the remote machine. The remote hook cannot reach a bridge that only listens on the Mac. The fix is a reverse tunnel: remote port 8765 forwards back to the Mac, so the hook's unchanged `http://127.0.0.1:8765/event` lands on the Mac's bridge.
+When Cursor, CodeBuddy, or Codex runs against a workspace over SSH, the agent and its hooks execute on the remote machine. The remote hook cannot reach a bridge that only listens on the Mac. The fix is a reverse tunnel: a chosen remote port (18765 below) forwards back to port 8765 on the Mac.
 
 On the Mac, add one line to that host's block in `~/.ssh/config`:
 
@@ -201,16 +202,16 @@ VS Code-based remotes (CodeBuddy, Cursor) launch the system `ssh`, which reads t
 Then, on the remote machine:
 
 1. Copy the hook script: `scp AgentLamp/hook_report.py your-remote-host:agentlamp/`.
-2. Install the same hook events in the remote `~/.codebuddy/settings.json` (or the remote workspace's `.codebuddy/settings.json`), pointing at the remote copy of the script. When the tunnel does not use remote port 8765, prefix each command with `AGENTLAMP_BRIDGE=http://127.0.0.1:18765/event`.
+2. Install the same hook events in the remote `~/.codebuddy/settings.json` (or the remote workspace's `.codebuddy/settings.json`), pointing at the remote copy of the script. With the example tunnel port, prefix each command with `AGENTLAMP_BRIDGE=http://127.0.0.1:18765/event`.
 3. Verify from the remote machine: `curl http://127.0.0.1:18765/status` should print the Mac bridge state, and a remote agent turn should move the lamp.
 
 Notes:
 
-- The remote needs Python 3 (the hook is standard library only) and remote port 8765 free. A busy port logs an SSH warning; the session itself is unaffected.
+- The remote needs Python 3 (the hook is standard library only) and the chosen remote port (18765 in the example) free. A busy port logs an SSH warning; the session itself is unaffected, but AgentLamp events cannot cross that failed tunnel.
 - Remote sessions report with their own session ids and merge with local ones; the strongest state still wins.
-- The CodeBuddy IDE hook set (seven events) has no `Notification`. Over SSH from the IDE you get working and idle, but no attention blink for permission prompts; the CodeBuddy CLI hook set keeps `Notification`.
+- CodeBuddy IDE currently does not emit useful `Notification` events for permission cards. Over SSH from the IDE you get reliable working and idle states, but permission prompts may not produce an attention blink; the CodeBuddy CLI can emit the documented notification types.
 - Without a tunnel, run the bridge on `AGENTLAMP_HOST=0.0.0.0` and point the remote hook at the Mac with `AGENTLAMP_BRIDGE=http://<mac-ip>:8765/event`. That exposes the bridge on the network; prefer the tunnel.
-- If the tunnel drops, remote hooks fail after 0.4 s and the agent continues. The lamp falls back on the 15-minute session timeout.
+- If the tunnel drops, remote hooks fail after 0.4 s and the agent continues. A stale working session falls back to idle after 3 minutes; error and attention sessions expire after 15 minutes.
 
 ### Another Mac
 

@@ -7,8 +7,10 @@ installed; otherwise the same loop runs in the terminal.
 """
 
 import asyncio
+import glob
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -33,6 +35,17 @@ STATE_TTL = {
 }
 HOST = os.environ.get("AGENTLAMP_HOST", "127.0.0.1")
 PORT = 8765
+CURSOR_LOG_GLOB = os.path.expanduser(
+    "~/Library/Application Support/Cursor/logs/*/window*/renderer.log"
+)
+CURSOR_APPROVAL_RE = re.compile(
+    r'Released wakelock .* reason="user-approval-requested" '
+    r"composerId=([A-Za-z0-9-]+)"
+)
+CURSOR_RESUMED_RE = re.compile(
+    r'Acquired wakelock .* reason="agent-loop-resumed" '
+    r"composerId=([A-Za-z0-9-]+)"
+)
 
 
 class LampState:
@@ -54,8 +67,13 @@ class LampState:
             self._last_event[app] = now
             bucket = self._sessions[app]
             if state == "idle":
-                bucket.pop(session, None)
+                if session == "*":
+                    bucket.clear()
+                else:
+                    bucket.pop(session, None)
             else:
+                if session == "*":
+                    return False
                 bucket[session] = (state, now)
             self._expire(now)
         return True
@@ -140,6 +158,56 @@ class LampState:
 
 
 LAMP = LampState()
+
+
+def cursor_log_event(line):
+    """Return ``(session, state)`` for a Cursor approval lifecycle log line.
+
+    Cursor's public hooks do not expose native approval-card state. The local
+    renderer log does: it releases the agent-loop wakelock while an approval
+    card is waiting and reacquires it once the user answers.
+    """
+    match = CURSOR_APPROVAL_RE.search(line)
+    if match:
+        return match.group(1), "attention"
+    match = CURSOR_RESUMED_RE.search(line)
+    if match:
+        return match.group(1), "working"
+    return None
+
+
+def watch_cursor_logs():
+    """Follow current Cursor renderer logs without replaying old approvals."""
+    offsets = {}
+    initialized = False
+    while True:
+        paths = set(glob.glob(CURSOR_LOG_GLOB))
+        for stale in set(offsets) - paths:
+            del offsets[stale]
+        for path in paths:
+            try:
+                size = os.path.getsize(path)
+                if path not in offsets:
+                    # Existing files may contain old unanswered cards. Start
+                    # at EOF on initial startup; newly-created logs start at 0.
+                    offsets[path] = size if not initialized else 0
+                elif size < offsets[path]:
+                    offsets[path] = 0
+                with open(path, errors="replace") as stream:
+                    stream.seek(offsets[path])
+                    while True:
+                        line = stream.readline()
+                        if not line:
+                            break
+                        event = cursor_log_event(line)
+                        if event is not None:
+                            session, state = event
+                            LAMP.event("cursor", session, state)
+                    offsets[path] = stream.tell()
+            except OSError:
+                continue
+        initialized = True
+        time.sleep(0.5)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -304,6 +372,8 @@ def run_menu():
 
 def main():
     threading.Thread(target=serve_http, daemon=True).start()
+    if sys.platform == "darwin":
+        threading.Thread(target=watch_cursor_logs, daemon=True).start()
     print(f"AgentLamp bridge on http://{HOST}:{PORT}", flush=True)
     terminal = "--terminal" in sys.argv
     try:

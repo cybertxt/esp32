@@ -32,6 +32,22 @@ class LampStateTests(unittest.TestCase):
         lamp.event("cursor", "b", "idle")
         self.assertEqual(lamp.snapshot()["apps"]["cursor"], "idle")
 
+    def test_wildcard_idle_clears_all_app_sessions(self):
+        lamp = bridge.LampState()
+        lamp.event("codebuddy", "parent", "working")
+        lamp.event("codebuddy", "child", "working")
+        lamp.event("cursor", "other-app", "working")
+        self.assertTrue(lamp.event("codebuddy", "*", "idle"))
+        snap = lamp.snapshot()
+        self.assertEqual(snap["apps"]["codebuddy"], "idle")
+        self.assertEqual(snap["sessions"]["codebuddy"], [])
+        self.assertEqual(snap["apps"]["cursor"], "working")
+
+    def test_wildcard_cannot_set_non_idle_state(self):
+        lamp = bridge.LampState()
+        self.assertFalse(lamp.event("codebuddy", "*", "working"))
+        self.assertEqual(lamp.snapshot()["apps"]["codebuddy"], "idle")
+
     def test_override_wins_and_clears(self):
         lamp = bridge.LampState()
         lamp.event("cursor", "a", "attention")
@@ -103,6 +119,36 @@ class LampStateTests(unittest.TestCase):
         self.assertLess(snap["ages"]["cursor"], 2)
         lamp.note_echo(b"\x01\x00\x00")
         self.assertEqual(lamp.snapshot()["echo"], [1, 0, 0])
+
+
+class CursorLogTests(unittest.TestCase):
+    def test_approval_requested_maps_to_attention(self):
+        line = (
+            '2026-10-26 11:49:29.905 [info] [ComposerWakelockManager] '
+            'Released wakelock id=8 reason="user-approval-requested" '
+            "composerId=abc123-def456\n"
+        )
+        self.assertEqual(
+            bridge.cursor_log_event(line), ("abc123-def456", "attention")
+        )
+
+    def test_agent_loop_resumed_maps_to_working(self):
+        line = (
+            '2026-10-26 11:49:33.374 [info] [ComposerWakelockManager] '
+            'Acquired wakelock id=9 reason="agent-loop-resumed" '
+            "composerId=abc123-def456\n"
+        )
+        self.assertEqual(
+            bridge.cursor_log_event(line), ("abc123-def456", "working")
+        )
+
+    def test_unrelated_wakelock_line_is_ignored(self):
+        line = (
+            '2026-10-26 11:49:59.000 [info] [ComposerWakelockManager] '
+            'Released wakelock id=9 reason="generation-ended" '
+            "composerId=abc123-def456\n"
+        )
+        self.assertIsNone(bridge.cursor_log_event(line))
 
 
 if __name__ == "__main__":

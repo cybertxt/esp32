@@ -121,7 +121,10 @@ def main():
         post(app, session, "working")
         emit(None)
     if app == "codebuddy" and event == "stop":
-        post(app, session, "idle")
+        # CodeBuddy emits tool events for child/subagent session IDs but its
+        # Stop hook reports only the parent ID. Clearing just that ID leaves
+        # child sessions pinned at working after the whole turn has ended.
+        post(app, "*", "idle")
         emit(None)
     if app == "codebuddy" and event == "notify":
         # The IDE build ships no Notification call sites; when a surface

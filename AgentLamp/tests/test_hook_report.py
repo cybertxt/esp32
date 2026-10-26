@@ -138,7 +138,9 @@ class HookReportTests(unittest.TestCase):
 
     def test_codebuddy_stop_sets_idle(self):
         self.run_hook("codebuddy", "stop", '{"session_id":"cb1"}')
-        self.assertEqual(self.server.next_post()["state"], "idle")
+        post = self.server.next_post()
+        self.assertEqual(post["state"], "idle")
+        self.assertEqual(post["session"], "*")
 
     def test_garbage_input_is_safe(self):
         out = self.run_hook("cursor", "post-tool", "this is not json")
