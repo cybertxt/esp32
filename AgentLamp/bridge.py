@@ -24,8 +24,11 @@ TIMEOUT_S = 15 * 60
 # A "working" session with no events for this long falls back to idle.
 # Stop events can be lost (interrupted turns, a background command that
 # finishes after its turn ended) and must not pin the lamp at "working"
-# for the full TIMEOUT_S. Attention keeps the long TTL: a question can
-# legitimately wait on the user for a long time.
+# for the full TIMEOUT_S. CodeBuddy avoids this limit while a turn is
+# genuinely active by sending heartbeat refreshes (see hook_report.py);
+# the TTL is only the failsafe if that heartbeat dies. Attention keeps
+# the long TTL: a question can legitimately wait on the user for a long
+# time.
 WORKING_TIMEOUT_S = int(os.environ.get("AGENTLAMP_WORKING_TTL_S", "180"))
 STATE_TTL = {
     "idle": 0,
@@ -59,8 +62,10 @@ class LampState:
         self.linked = False
         self.echo = b""
 
-    def event(self, app, session, state):
+    def event(self, app, session, state, heartbeat=False):
         if app not in APPS or state not in RANK or not session:
+            return False
+        if heartbeat and (state == "idle" or session == "*"):
             return False
         now = time.monotonic()
         with self._lock:
@@ -74,6 +79,11 @@ class LampState:
             else:
                 if session == "*":
                     return False
+                if heartbeat and session in bucket:
+                    # A heartbeat proves the turn is still alive, but it
+                    # must not downgrade a session that has since moved
+                    # to attention or error: only refresh its timestamp.
+                    state = bucket[session][0]
                 bucket[session] = (state, now)
             self._expire(now)
         return True
@@ -234,7 +244,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": "bad json"})
             return
         if self.path == "/event":
-            ok = LAMP.event(body.get("app"), str(body.get("session") or ""), body.get("state"))
+            ok = LAMP.event(
+                body.get("app"),
+                str(body.get("session") or ""),
+                body.get("state"),
+                heartbeat=body.get("heartbeat") is True,
+            )
             self._send(200 if ok else 400, LAMP.snapshot())
             return
         if self.path == "/override":

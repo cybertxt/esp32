@@ -4,6 +4,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -63,17 +64,20 @@ class HookReportTests(unittest.TestCase):
         self.server = CaptureServer()
         self.base_env = os.environ.copy()
         self.base_env["AGENTLAMP_BRIDGE"] = self.server.url()
+        # Heartbeat daemons are covered by one dedicated test; elsewhere
+        # they would keep posting to the capture server in the background.
+        self.base_env["AGENTLAMP_HEARTBEAT"] = "0"
 
     def tearDown(self):
         self.server.stop()
 
-    def run_hook(self, app, event, stdin=""):
+    def run_hook(self, app, event, stdin="", env=None):
         proc = subprocess.run(
             [sys.executable, SCRIPT, app, event],
             input=stdin.encode(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=self.base_env,
+            env=env or self.base_env,
             timeout=10,
         )
         self.assertEqual(proc.returncode, 0, proc.stderr.decode())
@@ -116,11 +120,13 @@ class HookReportTests(unittest.TestCase):
                       '{"conversation_id":"t1","command":"ls","sandbox":true}')
         self.server.assert_no_post(timeout=1.5)
 
-    def test_codebuddy_pre_tool_does_not_infer_attention(self):
+    def test_codebuddy_pre_tool_posts_working_not_attention(self):
         out = self.run_hook("codebuddy", "pre-tool",
                             '{"session_id":"cb1","tool_name":"Bash"}')
         self.assertEqual(out, "")
-        self.server.assert_no_post(timeout=1.5)
+        post = self.server.next_post()
+        self.assertEqual(post["state"], "working")
+        self.assertNotIn("heartbeat", post)
 
     def test_codebuddy_post_tool_sets_working(self):
         self.run_hook("codebuddy", "post-tool",
@@ -141,6 +147,47 @@ class HookReportTests(unittest.TestCase):
         post = self.server.next_post()
         self.assertEqual(post["state"], "idle")
         self.assertEqual(post["session"], "*")
+
+    def test_codebuddy_heartbeat_posts_until_stop(self):
+        env = dict(self.base_env)
+        env["AGENTLAMP_HEARTBEAT"] = "1"
+        env["AGENTLAMP_HEARTBEAT_INTERVAL_S"] = "0.1"
+        try:
+            self.run_hook("codebuddy", "prompt",
+                          '{"session_id":"cb-heartbeat"}', env=env)
+            first = self.server.next_post()
+            self.assertEqual(first["state"], "working")
+            self.assertNotIn("heartbeat", first)
+            deadline = time.monotonic() + 4
+            while True:
+                post = self.server.next_post(
+                    timeout=max(0.1, deadline - time.monotonic())
+                )
+                if post.get("heartbeat") is True:
+                    self.assertEqual(post["session"], "cb-heartbeat")
+                    self.assertEqual(post["state"], "working")
+                    break
+                self.assertLess(time.monotonic(), deadline)
+        finally:
+            self.run_hook("codebuddy", "stop",
+                          '{"session_id":"cb-heartbeat"}', env=env)
+        # Consume the idle clear (heartbeats queued before the stop may
+        # precede it), then confirm the heartbeat really stopped.
+        deadline = time.monotonic() + 4
+        while True:
+            post = self.server.next_post(
+                timeout=max(0.1, deadline - time.monotonic())
+            )
+            if post["state"] == "idle" and post["session"] == "*":
+                break
+            self.assertLess(time.monotonic(), deadline)
+        time.sleep(0.3)
+        while True:
+            try:
+                self.server.posts.get_nowait()
+            except queue.Empty:
+                break
+        self.server.assert_no_post(timeout=0.5)
 
     def test_garbage_input_is_safe(self):
         out = self.run_hook("cursor", "post-tool", "this is not json")

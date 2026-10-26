@@ -46,7 +46,7 @@ flowchart LR
 ```
 
 1. A hook runs alongside the agent and POSTs one JSON event to the bridge. Local hooks use `http://127.0.0.1:8765/event`; remote hooks reach the same endpoint through the SSH tunnel described below. The Mac bridge also follows Cursor's local renderer log for the native approval-card lifecycle that Cursor hooks do not expose.
-2. [bridge.py](bridge.py) keeps a set of session ids per app. The byte it sends is the strongest state among that app’s sessions: attention, then error, then working, then idle. A quiet `working` session falls back to idle after 3 minutes (`AGENTLAMP_WORKING_TTL_S`) — a turn whose `stop` event was lost no longer pins the lamp. `error` and `attention` sessions drop after 15 minutes.
+2. [bridge.py](bridge.py) keeps a set of session ids per app. The byte it sends is the strongest state among that app’s sessions: attention, then error, then working, then idle. A quiet `working` session falls back to idle after 3 minutes (`AGENTLAMP_WORKING_TTL_S`) — a turn whose `stop` event was lost no longer pins the lamp. CodeBuddy sessions stay alive past that limit through a heartbeat (below), so the TTL is only a failsafe there. `error` and `attention` sessions drop after 15 minutes.
 3. The bridge scans for the BLE name `AgentLamp` and writes three bytes to one GATT characteristic. The board notifies the same three bytes back.
 
 The ESP32-S3 has BLE 5 only. Classic Bluetooth serial is not available, so the Mac must use CoreBluetooth. The bridge does that through Python `bleak`. Only one bridge can hold the connection. A second Mac must stop the first bridge before it connects.
@@ -79,9 +79,10 @@ Cursor has no public hook that means “an approval card is on screen,” so com
 
 **CodeBuddy** (`~/.codebuddy/settings.json`, hooks beta since v1.16):
 
-- `UserPromptSubmit` sets working. CodeBuddy emits tool events for parent and child/subagent session ids but reports `Stop` only for the parent. `Stop` therefore clears every CodeBuddy session, preventing an orphaned child session from pinning the lamp at working.
+- `UserPromptSubmit` sets working and starts a per-session heartbeat. CodeBuddy can run a single tool for many minutes without emitting any hook event, so the heartbeat re-posts working every 30 s (`AGENTLAMP_HEARTBEAT_INTERVAL_S`) until `Stop`; without it, a long tool expired to idle at the bridge's 3-minute working TTL while it was still running. Heartbeat posts refresh the session without downgrading an attention or error state. The heartbeat self-terminates after 12 h (`AGENTLAMP_HEARTBEAT_MAX_S`) so a crashed agent cannot pin the lamp forever, and `AGENTLAMP_HEARTBEAT=0` disables it.
+- CodeBuddy emits tool events for parent and child/subagent session ids but reports `Stop` only for the parent. `Stop` therefore stops every CodeBuddy heartbeat and clears every CodeBuddy session, preventing an orphaned child session from pinning the lamp at working. A child that genuinely keeps working re-registers through its next tool hook.
 - `Notification` runs without a matcher so every type reaches the hook; `permission_prompt`, `idle_prompt`, and `elicitation_dialog` set attention, other types are ignored. The IDE build defines these notification calls but never invokes them, so do not rely on `Notification` for approval cards in the IDE.
-- `PreToolUse` is observation-only because the IDE does not distinguish “about to execute” from “waiting for approval.” `PostToolUse` returns to working.
+- `PreToolUse` sets working (never attention, because the IDE does not distinguish “about to execute” from “waiting for approval”) and restarts the heartbeat if it died. `PostToolUse` returns to working.
 - Every hook invocation is appended to `$TMPDIR/agentlamp-hooks.log` (256 KB cap) so silent surfaces are easy to diagnose. Docs: [codebuddy.ai/docs/cli/hooks](https://www.codebuddy.ai/docs/cli/hooks).
 
 **Codex** (`~/.codex/hooks.json`), not the normal ChatGPT desktop chat:
@@ -140,7 +141,7 @@ Allow Bluetooth for the terminal or Python process when macOS asks. Leave the pr
 
 Each app has Auto, Idle, Working, Needs you, and Error. Auto follows the hooks. The other four override that app until you choose Auto again. `--terminal` skips the menu and logs in the shell.
 
-`GET http://127.0.0.1:8765/status` returns the link and the three states, the live sessions behind them, how long since each app's last hook event, and the bytes the board last echoed. `POST /event` with `{"app","session","state"}` is what the hooks send. An idle event with `"session":"*"` clears every session for that app; the bridge rejects `*` for non-idle states. `POST /override` with `{"app","state"}` sets a manual state; `state: null` clears it.
+`GET http://127.0.0.1:8765/status` returns the link and the three states, the live sessions behind them, how long since each app's last hook event, and the bytes the board last echoed. `POST /event` with `{"app","session","state"}` is what the hooks send. An idle event with `"session":"*"` clears every session for that app; the bridge rejects `*` for non-idle states. A `"heartbeat": true` flag on a working event refreshes that session's timestamp without changing its state, creating it as working if it had already expired. `POST /override` with `{"app","state"}` sets a manual state; `state: null` clears it.
 
 The icon in the menu bar is a plain template PNG. It lives in [lamp_icon.png](lamp_icon.png); [tools/make_icon.py](tools/make_icon.py) regenerates it. To check the state logic without hardware, run `python3 -m unittest discover -s AgentLamp/tests -p "test_*.py"`.
 
@@ -211,7 +212,7 @@ Notes:
 - Remote sessions report with their own session ids and merge with local ones; the strongest state still wins.
 - CodeBuddy IDE currently does not emit useful `Notification` events for permission cards. Over SSH from the IDE you get reliable working and idle states, but permission prompts may not produce an attention blink; the CodeBuddy CLI can emit the documented notification types.
 - Without a tunnel, run the bridge on `AGENTLAMP_HOST=0.0.0.0` and point the remote hook at the Mac with `AGENTLAMP_BRIDGE=http://<mac-ip>:8765/event`. That exposes the bridge on the network; prefer the tunnel.
-- If the tunnel drops, remote hooks fail after 0.4 s and the agent continues. A stale working session falls back to idle after 3 minutes; error and attention sessions expire after 15 minutes.
+- If the tunnel drops, remote hooks fail after 0.4 s and the agent continues. Heartbeat posts fail the same way, so a CodeBuddy working session falls back to idle after 3 minutes without a tunnel; error and attention sessions expire after 15 minutes. When the tunnel returns, the still-running heartbeat resumes refreshing the session.
 
 ### Another Mac
 

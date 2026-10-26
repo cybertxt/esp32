@@ -48,6 +48,49 @@ class LampStateTests(unittest.TestCase):
         self.assertFalse(lamp.event("codebuddy", "*", "working"))
         self.assertEqual(lamp.snapshot()["apps"]["codebuddy"], "idle")
 
+    def test_heartbeat_creates_and_refreshes_working(self):
+        lamp = bridge.LampState()
+        self.assertTrue(
+            lamp.event("codebuddy", "long-tool", "working", heartbeat=True)
+        )
+        self.assertEqual(lamp.snapshot()["apps"]["codebuddy"], "working")
+        with lamp._lock:
+            lamp._sessions["codebuddy"]["long-tool"] = (
+                "working",
+                time.monotonic() - bridge.WORKING_TIMEOUT_S - 1,
+            )
+        self.assertTrue(
+            lamp.event("codebuddy", "long-tool", "working", heartbeat=True)
+        )
+        snap = lamp.snapshot()
+        self.assertEqual(snap["apps"]["codebuddy"], "working")
+        self.assertLess(snap["sessions"]["codebuddy"][0]["age_s"], 2)
+
+    def test_heartbeat_does_not_downgrade_attention(self):
+        lamp = bridge.LampState()
+        lamp.event("codebuddy", "cb1", "attention")
+        with lamp._lock:
+            lamp._sessions["codebuddy"]["cb1"] = (
+                "attention",
+                time.monotonic() - bridge.TIMEOUT_S + 60,
+            )
+        self.assertTrue(
+            lamp.event("codebuddy", "cb1", "working", heartbeat=True)
+        )
+        snap = lamp.snapshot()
+        self.assertEqual(snap["apps"]["codebuddy"], "attention")
+        self.assertLess(snap["sessions"]["codebuddy"][0]["age_s"], 2)
+
+    def test_heartbeat_is_validated(self):
+        lamp = bridge.LampState()
+        self.assertFalse(
+            lamp.event("codebuddy", "*", "working", heartbeat=True)
+        )
+        self.assertFalse(
+            lamp.event("codebuddy", "cb1", "idle", heartbeat=True)
+        )
+        self.assertEqual(lamp.snapshot()["apps"]["codebuddy"], "idle")
+
     def test_override_wins_and_clears(self):
         lamp = bridge.LampState()
         lamp.event("cursor", "a", "attention")
