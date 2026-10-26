@@ -71,16 +71,16 @@ Hooks return immediately and do not approve or block the agent. If the bridge is
 
 - `beforeSubmitPrompt` sets working.
 - `stop` sets idle, or error when `status` is `error`.
-- `beforeShellExecution` and `beforeMCPExecution` arm attention for unsandboxed calls. The deferred check fires only when the call is **neither finished nor running**: while a process holding the command text is still alive the lamp stays "working", so long builds, `ssh`, and sleeps do not false-blink. A call that sits unresolved past `AGENTLAMP_DEFER_S` (default 8 s) with no matching process is treated as blocked on an approval card and blinks. The deferral is keyed per call (`tool_use_id` on Cursor 3.24+, otherwise the command text), so one command finishing never cancels the timer of another that is still blocked. `afterShellExecution` and `afterMCPExecution` disarm the timer and return the session to working. `postToolUseFailure` with a permission denial clears every pending timer for the session, so a denied card leaves no stray blink. The marker lives in `$TMPDIR/agentlamp-pending` and needs no cleanup.
+- `beforeShellExecution` and `beforeMCPExecution` are observation-only; they fire as execution begins and do not identify an approval card. `afterShellExecution`, `afterMCPExecution`, and `postToolUseFailure` return the session to working.
 - `preToolUse` / `postToolUse` for the tool name `AskQuestion` set attention, then working again.
 
-Cursor has no hook that means “an approval card is on screen.” A turn that silently runs longer than the deferral still reads as "needs you". A reply that merely ends with a question mark is a finished turn, so the lamp goes idle. Cloud agents and Tab autocomplete do not move the lamp. Docs: [cursor.com/docs/hooks](https://cursor.com/docs/hooks).
+Cursor has no hook that means “an approval card is on screen.” Command execution is therefore never guessed as attention: guessing inverted the states in practice (running commands became "needs you", while the real approval card emitted no event and stayed "working"). Explicit `AskQuestion` calls still report attention. A reply that merely ends with a question mark is a finished turn, so the lamp goes idle. Cloud agents and Tab autocomplete do not move the lamp. Docs: [cursor.com/docs/hooks](https://cursor.com/docs/hooks).
 
 **CodeBuddy** (`~/.codebuddy/settings.json`, hooks beta since v1.16):
 
 - `UserPromptSubmit` sets working. `Stop` sets idle and clears pending timers.
 - `Notification` runs without a matcher so every type reaches the hook; `permission_prompt`, `idle_prompt`, and `elicitation_dialog` set attention, other types are ignored. The IDE build defines these notification calls but never invokes them, so do not rely on `Notification` for approval cards in the IDE.
-- `PreToolUse` arms the same deferred attention Cursor's shell hooks use: a tool call that stays unresolved for `AGENTLAMP_DEFER_S` — and is not a still-running command — blinks. This is what catches approval cards in the IDE. `PostToolUse` disarms the timer and returns to working.
+- `PreToolUse` is observation-only because the IDE does not distinguish “about to execute” from “waiting for approval.” `PostToolUse` returns to working.
 - Every hook invocation is appended to `$TMPDIR/agentlamp-hooks.log` (256 KB cap) so silent surfaces are easy to diagnose. Docs: [codebuddy.ai/docs/cli/hooks](https://www.codebuddy.ai/docs/cli/hooks).
 
 **Codex** (`~/.codex/hooks.json`), not the normal ChatGPT desktop chat:
